@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  sandbox-engine:
+    build: .
+    command: python engine.py
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:0.5b}
+      - POPULATION=${POPULATION:-100}
+      - TICKS=${TICKS:-80}
+    restart: unless-stopped
+
+  purgatorium:
+    build: .
+    command: python purgatorium.py
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CHECK_INTERVAL=60
+    restart: unless-stopped
+    depends_on:
+      - sandbox-engine
