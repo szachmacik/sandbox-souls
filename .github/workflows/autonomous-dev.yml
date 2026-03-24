@@ -1,0 +1,147 @@
+name: Autonomous Development Loop
+
+on:
+  schedule:
+    # Uruchamia się co 6 godzin - 00:00, 06:00, 12:00, 18:00 UTC
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task to execute'
+        required: false
+        default: 'auto'
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install httpx supabase
+
+      - name: Run autonomous development task
+        env:
+          SUPABASE_URL: https://blgdhfcosqjzrutncbbr.supabase.co
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          OLLAMA_URL: https://ollama.ofshore.dev
+          TELEGRAM_BOT: ${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          python3 << 'EOF'
+          import httpx, json, os, datetime
+          
+          SUPABASE_URL = os.environ.get('SUPABASE_URL')
+          SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+          OLLAMA_URL = os.environ.get('OLLAMA_URL')
+          BOT = os.environ.get('TELEGRAM_BOT')
+          CHAT = os.environ.get('TELEGRAM_CHAT')
+          
+          def tg(msg):
+              try:
+                  httpx.post(f'https://api.telegram.org/bot{BOT}/sendMessage',
+                      json={'chat_id': CHAT, 'text': msg}, timeout=10)
+              except: pass
+          
+          def sb_query(sql):
+              try:
+                  r = httpx.post(f'{SUPABASE_URL}/rest/v1/rpc/execute_query',
+                      headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}',
+                               'Content-Type': 'application/json'},
+                      json={'query': sql}, timeout=15)
+                  return r.json()
+              except Exception as e:
+                  return {'error': str(e)}
+          
+          def ask_ollama(prompt):
+              try:
+                  full = ""
+                  with httpx.stream('POST', f'{OLLAMA_URL}/api/generate',
+                      json={'model': 'qwen2.5:0.5b', 'prompt': prompt, 'stream': True},
+                      timeout=60) as r:
+                      for line in r.iter_lines():
+                          if line:
+                              d = json.loads(line)
+                              full += d.get('response', '')
+                              if d.get('done'): break
+                  return full.strip()[:500]
+              except Exception as e:
+                  return f'Ollama error: {e}'
+          
+          def check_system_health():
+              """Sprawdź stan systemu przez Coolify API"""
+              try:
+                  coolify = os.environ.get('COOLIFY_TOKEN')
+                  r = httpx.get('https://coolify.ofshore.dev/api/v1/applications',
+                      headers={'Authorization': f'Bearer {coolify}'}, timeout=15)
+                  apps = r.json()
+                  healthy = sum(1 for a in apps if a.get('status') == 'running:healthy')
+                  unhealthy = [a['name'] for a in apps if 'unhealthy' in a.get('status','') or 'exited' in a.get('status','')]
+                  return healthy, len(apps), unhealthy
+              except:
+                  return 0, 0, []
+          
+          def get_pending_goals():
+              """Pobierz cele do realizacji z bazy"""
+              try:
+                  r = httpx.get(f'{SUPABASE_URL}/rest/v1/autonomous_goals',
+                      headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                      params={'is_active': 'eq.true', 'last_run': 'is.null', 'select': '*', 'limit': '3'},
+                      timeout=10)
+                  return r.json() if r.status_code == 200 else []
+              except:
+                  return []
+          
+          # MAIN LOOP
+          now = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+          healthy, total, unhealthy = check_system_health()
+          
+          report = f"⚙️ AUTO-DEV LOOP {now}\n"
+          report += f"Serwisy: {healthy}/{total} healthy\n"
+          
+          if unhealthy:
+              report += f"Uwaga: {', '.join(unhealthy[:3])}\n"
+          
+          # Sprawdź cele
+          goals = get_pending_goals()
+          if goals:
+              report += f"\nCele do realizacji: {len(goals)}\n"
+              for g in goals[:2]:
+                  report += f"  • {g.get('goal','?')[:60]}\n"
+          
+          # Zapytaj Ollama co dalej
+          prompt = f"""System ofshore.dev. Healthy: {healthy}/{total}. 
+          Niezdrowe: {unhealthy[:3] if unhealthy else 'brak'}.
+          Zaproponuj 1 konkretne działanie które poprawi system. Krótko, po polsku."""
+          
+          suggestion = ask_ollama(prompt)
+          if suggestion and 'error' not in suggestion.lower():
+              report += f"\nOllama sugestia:\n{suggestion[:200]}\n"
+          
+          report += "\n— Autonomous Dev Loop"
+          
+          tg(report)
+          print(report)
+          print("✅ Done")
+          EOF
+
+      - name: Notify if workflow failed
+        if: failure()
+        env:
+          TELEGRAM_BOT: ${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"$TELEGRAM_CHAT\",\"text\":\"❌ Auto-dev workflow failed: $GITHUB_REPOSITORY\"}"
