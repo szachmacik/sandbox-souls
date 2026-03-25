@@ -1,0 +1,74 @@
+name: Prime Impact Loop
+
+on:
+  schedule:
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install httpx -q
+
+      - name: Beat heartbeat (GitHub Actions alive)
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          python3 -c "
+          import httpx, os
+          r = httpx.post(
+            'https://blgdhfcosqjzrutncbbr.supabase.co/rest/v1/rpc/agent_heartbeat',
+            headers={'apikey': os.environ['SUPABASE_KEY'],
+                     'Authorization': 'Bearer ' + os.environ['SUPABASE_KEY'],
+                     'Content-Type': 'application/json'},
+            json={'p_agent_name': 'github-actions'}
+          )
+          print('heartbeat:', r.status_code)
+          "
+
+      - name: Run Prime Impact Calculator
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TELEGRAM_BOT: ${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          OLLAMA_URL: https://ollama.ofshore.dev
+        run: python3 prime_impact.py
+
+      - name: On failure — delegate to next agent
+        if: failure()
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TELEGRAM_BOT: ${{ secrets.TELEGRAM_BOT }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+        run: |
+          python3 -c "
+          import httpx, os
+          bot = os.environ['TELEGRAM_BOT']
+          chat = os.environ['TELEGRAM_CHAT']
+          key = os.environ['SUPABASE_KEY']
+          
+          # Zapisz do kolejki delegacji
+          httpx.post(
+            'https://blgdhfcosqjzrutncbbr.supabase.co/rest/v1/agent_delegation_queue',
+            headers={'apikey': key, 'Authorization': 'Bearer ' + key,
+                     'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+            json={'detected_by': 'github-actions-failure',
+                  'stopped_agent': 'prime-impact-workflow',
+                  'task_desc': 'prime_impact.py failed. Sprawdz logi GitHub Actions szachmacik/sandbox-souls',
+                  'delegated_to': 'claude-rafal',
+                  'status': 'pending'}
+          )
+          
+          # Ping Telegram
+          httpx.post(f'https://api.telegram.org/bot{bot}/sendMessage',
+            json={'chat_id': chat,
+                  'text': 'Workflow prime-impact padl. Delegacja do Claude-Rafal. Sprawdz: github.com/szachmacik/sandbox-souls/actions'})
+          print('delegated')
+          "
