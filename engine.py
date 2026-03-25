@@ -260,6 +260,19 @@ async def run_sandbox():
     log.info(f"✅ Done {sandbox_id}. validated={validated}/{len(dead)} avg_i={avg_i:.2f}")
     return sandbox_id
 
+
+async def beat_heart():
+    """Informuje Supabase ze daemon zyje — wykrycie zatrzyman"""
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/agent_heartbeat",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                         "Content-Type": "application/json"},
+                json={"p_agent_name": "sandbox-souls"}
+            )
+    except: pass
+
 async def main():
     # Sprawdź Ollama przy starcie
     ollama_ok = await check_ollama()
@@ -267,6 +280,7 @@ async def main():
     log.info(f"   pop={POPULATION} ticks={TICKS} interval={CHECK_INTERVAL}s llm_every={LLM_EVERY_N}")
 
     run_count = 0
+    await beat_heart()  # pierwsze bicie
     while True:
         try:
             # Odśwież dostępność Ollamy co run
@@ -276,6 +290,7 @@ async def main():
             log.info(f"Run #{run_count} done. Next in {CHECK_INTERVAL}s")
         except Exception as ex:
             log.error(f"Error: {ex}")
+        await beat_heart()
         await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
